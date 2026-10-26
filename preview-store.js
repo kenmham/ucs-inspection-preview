@@ -1,6 +1,7 @@
 /* Browser-only storage for the public preview. No requests or shared database. */
 (function(root){
   'use strict';
+  const AreaPages=typeof module!=='undefined'&&module.exports?require('../v2/web/area-pages.js'):root.AreaPages;
   const KEY='ucs-inspections-preview:records-v1';
   const FORMAT='ucs-inspections-preview-v1';
   function createStore(storage,questionnaire,makeId=()=>crypto.randomUUID(),now=()=>new Date().toISOString()){
@@ -21,7 +22,7 @@
       for(const [f,mode] of Object.entries(snapshot.dorm.features))if(mode==='Ask inspector')require(['','Yes','No','Not sure'].includes(screens[f]??''),'Choose whether '+f+' is present.');
       const clean={};
       for(const q of snapshot.questions){
-        if(snapshot.dorm.features[q.feature]==='Skip'||(snapshot.dorm.features[q.feature]==='Ask inspector'&&screens[q.feature]!=='Yes'))continue;
+        if(!q.area_id&&(snapshot.dorm.features[q.feature]==='Skip'||(snapshot.dorm.features[q.feature]==='Ask inspector'&&screens[q.feature]!=='Yes')))continue;
         const v=answers[q.id]??(q.type==='Checkboxes'?[]:'');
         require(q.type==='Checkboxes'?Array.isArray(v):typeof v==='string','Invalid answer type.');
         if(['Multiple choice','Checkboxes'].includes(q.type)){const vals=Array.isArray(v)?v:v?[v]:[];require(vals.every(x=>q.choices.includes(x))&&new Set(vals).size===vals.length,'Invalid choice for '+q.title+'.');}
@@ -40,10 +41,11 @@
       require(name.length<=200,'Enter a dorm name.');
       let dorm=config.dorms.find(d=>d.enabled&&d.name.toLowerCase()===name.toLowerCase());
       if(!dorm){const prior=data.forms.find(f=>f.dorm.name.toLowerCase()===name.toLowerCase());dorm={id:prior?.dorm.id||makeId(),name,round:'Preview',enabled:true,features:Object.fromEntries(config.features.map(f=>[f,'Include']))};}
-      const questions=config.questions.filter(q=>q.enabled&&dorm.features[q.feature]!=='Skip');
+      const areas=AreaPages.normalize(body.areas||[]);
+      const questions=config.questions.filter(q=>q.enabled&&dorm.features[q.feature]!=='Skip').concat(AreaPages.questions(config,areas));
       let snapshot=data.forms.find(f=>f.dorm.id===dorm.id&&JSON.stringify(f.questions)===JSON.stringify(questions));
       const fresh=!snapshot;
-      if(fresh)snapshot={id:makeId(),created_at:now(),dorm:clone(dorm),questions:clone(questions)};
+      if(fresh)snapshot={id:makeId(),created_at:now(),dorm:clone(dorm),questions:clone(questions),...(areas.length?{areas:clone(areas)}:{})};
       const answers=validate(snapshot,body.answers,body.screens);
       const old=data.responses.find(r=>r.id===body.id);
       if(old){require(old.form_id===snapshot.id&&JSON.stringify(old.answers)===JSON.stringify(answers)&&JSON.stringify(old.screens)===JSON.stringify(body.screens),'This test inspection was already saved with different answers.');return {saved:true,id:body.id};}
@@ -52,7 +54,7 @@
       write(data);
       return {saved:true,id:body.id};
     }
-    function csv(){const data=read(),map=new Map(data.forms.map(f=>[f.id,f]));const ids=[...new Set(data.forms.flatMap(f=>f.questions.map(q=>q.id)))];const cell=v=>{v=Array.isArray(v)?v.join(' | '):String(v??'');if(/^\s*[=+\-@]/.test(v))v="'"+v;return '"'+v.replaceAll('"','""')+'"';};const rows=[['response_id','submitted_at','dorm','preview',...config.features.map(f=>'availability:'+f),...ids],...data.responses.map(r=>[r.id,r.submitted_at,map.get(r.form_id).dorm.name,true,...config.features.map(f=>r.screens[f]||map.get(r.form_id).dorm.features[f]),...ids.map(id=>r.answers[id])])];return '\ufeff'+rows.map(r=>r.map(cell).join(',')).join('\r\n');}
+    function csv(){const data=read(),map=new Map(data.forms.map(f=>[f.id,f]));const areaIds=[...new Set(data.forms.flatMap(f=>(f.areas||[]).map(a=>a.id)))];const ids=[...new Set(data.forms.flatMap(f=>f.questions.map(q=>q.id)))];const cell=v=>{v=Array.isArray(v)?v.join(' | '):String(v??'');if(/^\s*[=+\-@]/.test(v))v="'"+v;return '"'+v.replaceAll('"','""')+'"';};const rows=[['response_id','submitted_at','dorm','preview',...config.features.map(f=>'availability:'+f),...areaIds.flatMap(id=>[`area:${id}:type`,`area:${id}:label`]),...ids],...data.responses.map(r=>[r.id,r.submitted_at,map.get(r.form_id).dorm.name,true,...config.features.map(f=>r.screens[f]||map.get(r.form_id).dorm.features[f]),...areaIds.flatMap(id=>{const a=map.get(r.form_id).areas?.find(a=>a.id===id);return [a?.type,a?.label];}),...ids.map(id=>r.answers[id])])];return '\ufeff'+rows.map(r=>r.map(cell).join(',')).join('\r\n');}
     function backup(){return JSON.stringify({format:FORMAT,exported_at:now(),...read()},null,2);}
     function reset(){try{storage.removeItem(KEY);}catch{throw Error('Browser storage could not be cleared.');}}
     return {request,csv,backup,reset};
